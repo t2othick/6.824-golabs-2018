@@ -2,6 +2,7 @@ package mapreduce
 
 import (
 	"fmt"
+	"sync"
 )
 
 //
@@ -40,46 +41,34 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 		}
 	}()
 
-	// 维护任务队列和任务执行状态
-	taskQueue := make(chan int, ntasks)
-	taskStatus := make(chan bool, ntasks)
-	go func() {
-		for i := 0; i < ntasks; i++ {
-			taskQueue <- i
-		}
-	}()
-
 	run := func(taskID int) {
-		worker := <-idleWorks                  // 获取当前空闲的 worker
-		defer func() { idleWorks <- worker }() // 使用完 worker 之后，一定要放回 idle 队列
-		args := DoTaskArgs{
-			JobName:       jobName,
-			File:          mapFiles[taskID],
-			Phase:         phase,
-			TaskNumber:    taskID,
-			NumOtherPhase: n_other,
-		}
-		if call(worker, "Worker.DoTask", args, nil) {
-			taskStatus <- true
-		} else {
-			taskQueue <- taskID
-		}
-	}
-
-	completed := 0
-	for {
-		select {
-		case taskID := <-taskQueue:
-			go run(taskID)
-		case <-taskStatus:
-			completed ++
-		default:
-			if completed == ntasks {
-				goto ForEnd
+		for {
+			worker := <-idleWorks                  // 获取当前空闲的 worker
+			defer func() { idleWorks <- worker }() // 使用完 worker 之后，一定要放回 idle 队列
+			args := DoTaskArgs{
+				JobName:       jobName,
+				File:          mapFiles[taskID],
+				Phase:         phase,
+				TaskNumber:    taskID,
+				NumOtherPhase: n_other,
+			}
+			if call(worker, "Worker.DoTask", args, nil) {
+				return
 			}
 		}
 	}
-ForEnd:
+
+	wg := sync.WaitGroup{}
+	wg.Add(ntasks)
+
+	for i := 0; i < ntasks; i ++ {
+		go func(taskID int) {
+			defer wg.Done()
+			run(taskID)
+		}(i)
+	}
+
+	wg.Wait()
 
 	fmt.Printf("Schedule: %v done\n", phase)
 }
