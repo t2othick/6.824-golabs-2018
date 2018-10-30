@@ -14,6 +14,25 @@ import (
 // suitable for passing to call(). registerChan will yield all
 // existing registered workers (if any) and new ones as they register.
 //
+
+func runTask(workers chan string, taskID int, jobName string, file string, phase jobPhase, nOther int) {
+	for {
+		worker := <-workers // 获取当前空闲的 worker
+		args := DoTaskArgs{
+			JobName:       jobName,
+			File:          file,
+			Phase:         phase,
+			TaskNumber:    taskID,
+			NumOtherPhase: nOther,
+		}
+		if call(worker, "Worker.DoTask", args, nil) {
+			workers <- worker
+			return
+		}
+		workers <- worker
+	}
+}
+
 func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, registerChan chan string) {
 	var ntasks int
 	var n_other int // number of inputs (for reduce) or outputs (for map)
@@ -28,11 +47,6 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 
 	fmt.Printf("Schedule: %v %v tasks (%d I/Os)\n", ntasks, phase, n_other)
 
-	// All ntasks tasks have to be scheduled on workers. Once all tasks
-	// have completed successfully, schedule() should return.
-	//
-	// Your code here (Part III, Part IV).
-
 	// 维护一个空闲 worker 的队列
 	idleWorks := make(chan string, ntasks)
 	go func() {
@@ -41,33 +55,15 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 		}
 	}()
 
-	run := func(taskID int) {
-		for {
-			worker := <-idleWorks                  // 获取当前空闲的 worker
-			defer func() { idleWorks <- worker }() // 使用完 worker 之后，一定要放回 idle 队列
-			args := DoTaskArgs{
-				JobName:       jobName,
-				File:          mapFiles[taskID],
-				Phase:         phase,
-				TaskNumber:    taskID,
-				NumOtherPhase: n_other,
-			}
-			if call(worker, "Worker.DoTask", args, nil) {
-				return
-			}
-		}
-	}
-
+	// 并发执行所有 worker，错误无限重试
 	wg := sync.WaitGroup{}
 	wg.Add(ntasks)
-
 	for i := 0; i < ntasks; i ++ {
 		go func(taskID int) {
 			defer wg.Done()
-			run(taskID)
+			runTask(idleWorks, taskID, jobName, mapFiles[taskID], phase, n_other)
 		}(i)
 	}
-
 	wg.Wait()
 
 	fmt.Printf("Schedule: %v done\n", phase)
