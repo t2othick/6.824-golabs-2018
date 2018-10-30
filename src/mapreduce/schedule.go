@@ -1,6 +1,9 @@
 package mapreduce
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 //
 // schedule() starts and waits for all tasks in the given phase (mapPhase
@@ -30,5 +33,45 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	//
 	// Your code here (Part III, Part IV).
 	//
+	idleWorks := make(chan string, ntasks)
+	killChan := make(chan bool, 1)
+	defer func() {
+		killChan <- true
+	}()
+	go func() {
+		for {
+			select {
+			case <-killChan:
+				break
+			default:
+				worker := <-registerChan
+				idleWorks <- worker
+				fmt.Println(worker)
+			}
+		}
+	}()
+
+	run := func(args DoTaskArgs) {
+		worker := <-idleWorks
+		defer func() { idleWorks <- worker }()
+		call(worker, "Worker.DoTask", args, nil)
+	}
+
+	wg := sync.WaitGroup{}
+	wg.Add(ntasks)
+	for i := 0; i < ntasks; i ++ {
+		go func(args DoTaskArgs) {
+			defer wg.Done()
+			run(args)
+		}(DoTaskArgs{
+			JobName:       jobName,
+			File:          mapFiles[i],
+			Phase:         phase,
+			TaskNumber:    i,
+			NumOtherPhase: n_other,
+		})
+	}
+	wg.Wait()
+
 	fmt.Printf("Schedule: %v done\n", phase)
 }
